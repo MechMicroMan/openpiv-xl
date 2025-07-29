@@ -236,7 +236,7 @@ def multipass(settings):
     # Saving
     txt_file = settings.save_path   
     print(f'Saving to {txt_file}')
-    tools.save(txt_file, x, y, -u[::-1], -v[::-1], flags, grid_mask, settings)
+    tools.save(txt_file, x, y, u[::-1], v[::-1], flags, grid_mask, settings)
 
     #print(f"Image Pair {counter + 1}")
     print(file_a.stem, file_b.stem)
