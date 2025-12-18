@@ -1,10 +1,14 @@
-"""The openpiv.filters module contains some filtering/smoothing routines."""
-from typing import Tuple, Optional
-import numpy as np
-from scipy.signal import convolve
-from openpiv.lib import replace_nans
+"""Image inpainting and filtering utilities for OpenPIV.
 
-__licence_ = """
+This module provides functions for replacing NaN values and outliers
+in velocity field arrays using iterative image inpainting algorithms.
+"""
+
+from typing import Literal, Tuple
+
+import numpy as np
+
+__licence__ = """
 Copyright (C) 2011  www.openpiv.net
 
 This program is free software: you can redistribute it and/or modify
@@ -22,181 +26,224 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
 
-def _gaussian_kernel(half_width: int=1)-> np.ndarray:
-    """A normalized 2D Gaussian kernel array
+def get_dist(kernel: np.ndarray, kernel_size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Generate distance maps from kernel center for weighting schemes.
 
     Parameters
     ----------
-    half_width : int
-        the half width of the kernel. Kernel
-        has shape 2*half_width + 1 (default half_width = 1, i.e.
-        a Gaussian of 3 x 3 kernel)
-
-    Examples
-    --------
-
-    >>> from openpiv.filters import _gaussian_kernel
-    >>> _gaussian_kernel(1)
-    array([[ 0.04491922,  0.12210311,  0.04491922],
-       [ 0.12210311,  0.33191066,  0.12210311],
-       [ 0.04491922,  0.12210311,  0.04491922]])
-
-    """
-    # size = int(half_width)
-    x, y = np.mgrid[-half_width:half_width + 1, -half_width:half_width + 1]
-    g = np.exp(-(x ** 2 / float(half_width) + y ** 2 / float(half_width)))
-    return g / g.sum()
-
-
-def gaussian_kernel(sigma:float, truncate:float=4.0)->np.ndarray:
-    """
-    Return Gaussian that truncates at the given number of standard deviations.
-    """
-
-    radius = int(truncate * sigma + 0.5)
-
-    x, y = np.mgrid[-radius:radius + 1, -radius:radius + 1]
-    sigma = sigma ** 2
-
-    k = 2 * np.exp(-0.5 * (x ** 2 + y ** 2) / sigma)
-    k = k / np.sum(k)
-
-    return k
-
-
-def gaussian(
-    u: np.ndarray,
-    v: np.ndarray,
-    half_width: int=1
-    )->Tuple[np.ndarray, np.ndarray]:
-    """Smooths the velocity field with a Gaussian kernel.
-
-    Parameters
-    ----------
-    u : 2d np.ndarray
-        the u velocity component field
-
-    v : 2d np.ndarray
-        the v velocity component field
-
-    half_width : int
-        the half width of the kernel. Kernel
-        has shape 2*half_width+1, default = 1
+    kernel : np.ndarray
+        Kernel array (2D or 3D) to generate distance maps for.
+    kernel_size : int
+        Kernel radius (distance from center).
 
     Returns
     -------
-    uf : 2d np.ndarray
-        the smoothed u velocity component field
+    tuple[np.ndarray, np.ndarray]
+        (dist, dist_inv): Euclidean distances from center and inverse distances.
 
-    vf : 2d np.ndarray
-        the smoothed v velocity component field
+    Raises
+    ------
+    ValueError
+        If kernel is not 2D or 3D.
+    """
+    n_dim = len(kernel.shape)
+    
+    if n_dim == 2:
+        xs, ys = np.indices(kernel.shape)
+        dist = np.sqrt((ys - kernel_size) ** 2 + (xs - kernel_size) ** 2)
+        dist_inv = np.sqrt(2) * kernel_size - dist
+    elif n_dim == 3:
+        xs, ys, zs = np.indices(kernel.shape)
+        dist = np.sqrt(
+            (ys - kernel_size) ** 2
+            + (xs - kernel_size) ** 2
+            + (zs - kernel_size) ** 2
+        )
+        dist_inv = np.sqrt(3) * kernel_size - dist
+    else:
+        raise ValueError(f"Kernel must be 2D or 3D, got {n_dim}D")
+
+    return dist, dist_inv
+
+def replace_nans(
+    array: np.ndarray,
+    max_iter: int,
+    tol: float,
+    kernel_size: int = 2,
+    method: Literal["localmean", "disk", "distance"] = "disk",
+) -> np.ndarray:
+
+    """Replace NaN elements using an iterative image inpainting algorithm.
+
+    The algorithm replaces each NaN by a weighted average of non-NaN neighbors.
+    Multiple iterations spread information from edges of missing regions until
+    the variation falls below the specified tolerance.
+
+    Parameters
+    ----------
+    array : np.ndarray (2D or 3D)
+        Array containing NaN elements to be replaced. If a masked array
+        (numpy.ma.MaskedArray), the mask is reapplied after replacement.
+    max_iter : int
+        Maximum number of iterations.
+    tol : float
+        Tolerance threshold for convergence (MSE of replaced elements).
+    kernel_size : int, optional
+        Kernel radius, by default 2. The kernel size becomes (2*kernel_size+1).
+    method : {"localmean", "disk", "distance"}, optional
+        Weighting method for neighboring elements:
+        - "localmean": Square kernel with uniform weights = n/((2*k+1)²-1)
+        - "disk": Circular kernel with uniform weights inside radius
+        - "distance": Circular inverse-distance weighting (closer = higher weight)
+        Default is "disk".
+
+    Returns
+    -------
+    np.ndarray
+        Copy of input array with NaN elements replaced.
+
+    Raises
+    ------
+    ValueError
+        If method is not one of {"localmean", "disk", "distance"}.
 
     """
-    g = _gaussian_kernel(half_width=half_width)
-    uf = convolve(u, g, mode="same")
-    vf = convolve(v, g, mode="same")
-    return uf, vf
 
+    kernel_size = int(kernel_size)
+    filled = array.copy()
+    
+    # Find indices where array is NaN
+    nan_indices = np.array(np.nonzero(np.isnan(array))).T.astype(int)
+    n_nans = len(nan_indices)
+    
+    # Early return if no NaN values present
+    if n_nans == 0:
+        return filled
+    
+    n_dim = len(array.shape)
+
+    # Generate the kernel based on method
+    kernel_shape = [2 * kernel_size + 1] * n_dim
+    kernel = np.zeros(kernel_shape, dtype=float)
+    
+    if method == "localmean":
+        kernel += 1.0
+    elif method == "disk":
+        dist, dist_inv = get_dist(kernel, kernel_size)
+        kernel[dist <= kernel_size] = 1.0
+    elif method == "distance":
+        dist, dist_inv = get_dist(kernel, kernel_size)
+        kernel[dist <= kernel_size] = dist_inv[dist <= kernel_size]
+    else:
+        raise ValueError(
+            f"Invalid method '{method}'. Must be one of: 'localmean', 'disk', 'distance'."
+        )
+
+    # Arrays to track replaced values and check convergence
+    replaced_new = np.zeros(n_nans)
+    replaced_old = np.zeros(n_nans)
+
+    # Iteratively fill NaN values until convergence
+    for iteration in range(max_iter):
+        # For each NaN element, compute weighted average of neighbors
+        for k in range(n_nans):
+            # Position of the current NaN element
+            nan_pos = nan_indices[k]
+            replaced_new[k] = 0.0
+
+            # Generate indices for the convolution window
+            window_ranges = [range(pos - kernel_size, pos + kernel_size + 1) 
+                           for pos in nan_pos]
+            slice_indices = np.array(np.meshgrid(*window_ranges, indexing='ij'))
+
+            # Create mask for indices within array bounds
+            boundary_mask = np.ones(slice_indices.shape[1:], dtype=bool)
+            for dim in range(n_dim):
+                boundary_mask &= (
+                    (slice_indices[dim] >= 0) & 
+                    (slice_indices[dim] < array.shape[dim])
+                )
+
+            # Extract window values and corresponding kernel weights
+            window_values = filled[tuple(slice_indices[:, boundary_mask])]
+            kernel_weights = kernel[boundary_mask]
+
+            # Compute weighted average (ignoring NaN values)
+            valid_mask = ~np.isnan(window_values)
+            valid_weight_sum = np.sum(kernel_weights[valid_mask])
+
+            if valid_weight_sum > 0:
+                replaced_new[k] = np.sum(window_values[valid_mask] * 
+                                        kernel_weights[valid_mask]) / valid_weight_sum
+            else:
+                replaced_new[k] = np.nan
+
+        # Update all NaN values with new estimates
+        filled[tuple(nan_indices.T)] = replaced_new
+
+        # Check convergence: if MSE is below tolerance, stop
+        mse = np.mean((replaced_new - replaced_old) ** 2)
+        if mse < tol:
+            break
+        
+        replaced_old = replaced_new.copy()
+
+    return filled
 
 def replace_outliers(
     u: np.ndarray,
     v: np.ndarray,
     flags: np.ndarray,
-    w: Optional[np.ndarray]=None,
-    method: str="localmean",
-    max_iter: int=5,
-    tol: float=1e-3,
-    kernel_size: int=1,
-    )-> Tuple[np.ndarray, ...]:
-    """Replace invalid vectors in an velocity field using an iterative image
-        inpainting algorithm.
+    method: Literal["localmean", "disk", "distance"] = "localmean",
+    max_iter: int = 5,
+    tol: float = 1e-3,
+    kernel_size: int = 1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Replace invalid velocity vectors using iterative image inpainting.
 
-    The algorithm is the following:
-
-    1) For each element in the arrays of the ``u`` and ``v`` components,
-       replace it by a weighted average
-       of the neighbouring elements which are not invalid themselves. The
-       weights depends of the method type. If ``method=localmean`` weight
-       are equal to 1/( (2*kernel_size+1)**2 -1 )
-
-    2) Several iterations are needed if there are adjacent invalid elements.
-       If this is the case, inforation is "spread" from the edges of the
-       missing regions iteratively, until the variation is below a certain
-       threshold.
+    Replaces flagged vectors in u and v velocity fields by weighted averages
+    of valid neighboring vectors. The process iterates until the variation
+    of replaced values falls below the tolerance threshold.
 
     Parameters
     ----------
-
-    u : 2d or 3d np.ndarray
-        the u velocity component field
-
-    v : 2d or 3d  np.ndarray
-        the v velocity component field
-
-    w : 2d or 3d  np.ndarray
-        the w velocity component field
-
-    flags : 2d array of positions with invalid vectors
-
-    grid_mask : 2d array of positions masked by the user
-
-    max_iter : int
-        the number of iterations
-
-    kernel_size : int
-        the size of the kernel, default is 1
-
-    method : str
-        the type of kernel used for repairing missing vectors
+    u : np.ndarray (2D or 3D)
+        u velocity component field.
+    v : np.ndarray (2D or 3D)
+        v velocity component field.
+    flags : np.ndarray (bool)
+        Boolean array marking positions with invalid vectors.
+    method : {"localmean", "disk", "distance"}, optional
+        Kernel type for inpainting, by default "localmean".
+    max_iter : int, optional
+        Maximum number of iterations, by default 5.
+    tol : float, optional
+        Convergence tolerance (MSE), by default 1e-3.
+    kernel_size : int, optional
+        Kernel radius, by default 1.
 
     Returns
     -------
-    uf : 2d or 3d np.ndarray
-        the smoothed u velocity component field, where invalid vectors have
-        been replaced
+    tuple[np.ndarray, np.ndarray]
+        (uf, vf): Repaired u and v velocity component fields.
 
-    vf : 2d or 3d np.ndarray
-        the smoothed v velocity component field, where invalid vectors have
-        been replaced
-
-    wf : 2d or 3d np.ndarray
-        the smoothed w velocity component field, where invalid vectors have
-        been replaced
+    Notes
+    -----
+    This function modifies the input arrays by setting flagged positions to NaN
+    before inpainting. Consider passing copies if you need to preserve originals.
 
     """
-    # we shall now replace NaNs only at flags positions,
-    # regardless the grid_mask (which is a user-provided masked region)
 
-    
-    # if not isinstance(u, np.ma.MaskedArray):
-    #     u = np.ma.masked_array(u, mask=np.ma.nomask)
-        
-    # # store grid_mask for reinforcement
-    # grid_mask = u.mask.copy()
-
+    # Mark invalid positions as NaN
     u[flags] = np.nan
     v[flags] = np.nan
-    
+
+    # Repair both velocity components independently
     uf = replace_nans(
-        u, method=method, max_iter=max_iter, tol=tol,
-        kernel_size=kernel_size
+        u, max_iter=max_iter, tol=tol, kernel_size=kernel_size, method=method
     )
     vf = replace_nans(
-        v, method=method, max_iter=max_iter, tol=tol,
-        kernel_size=kernel_size
+        v, max_iter=max_iter, tol=tol, kernel_size=kernel_size, method=method
     )
 
- 
-    # uf = np.ma.masked_array(uf, mask=grid_mask)
-    # vf = np.ma.masked_array(vf, mask=grid_mask)
-
-    if isinstance(w, np.ndarray):
-        w[flags] = np.nan
-        wf = replace_nans(
-            w, method=method, max_iter=max_iter, tol=tol,
-            kernel_size=kernel_size
-        )
-        wf = np.ma.masked_array(wf, mask=grid_mask)
-        return uf, vf, wf
-    
     return uf, vf

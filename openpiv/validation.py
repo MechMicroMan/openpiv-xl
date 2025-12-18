@@ -274,7 +274,7 @@ def typical_validation(
         flag = flag | global_std(u, v, std_threshold=settings.std_threshold)
 
         now = datetime.now()
-        print(f"\t{now.strftime("%H:%M:%S")}: std filter invalidated {sum(flag.flatten())} vectors")
+        print(f"\t{now.strftime('%H:%M:%S')}: std filter invalidated {sum(flag.flatten())} vectors")
 
     # u[flag_s] = np.ma.masked
     # v[flag_s] = np.ma.masked
@@ -292,7 +292,7 @@ def typical_validation(
         )
 
         now = datetime.now()
-        print(f"\t{now.strftime("%H:%M:%S")}: median filter invalidated {sum(flag.flatten())} vectors")
+        print(f"\t{now.strftime('%H:%M:%S')}: median filter invalidated {sum(flag.flatten())} vectors")
     
     # u[flag_m] = np.ma.masked
     # v[flag_m] = np.ma.masked
@@ -310,7 +310,7 @@ def typical_validation(
         # v[flag_s2n] = np.ma.masked
        
         now = datetime.now()
-        print(f"\t{now.strftime("%H:%M:%S")}: s2n filter invalidated {sum(flag_s2n.flatten())} vectors")
+        print(f"\t{now.strftime('%H:%M:%S')}: s2n filter invalidated {sum(flag_s2n.flatten())} vectors")
         # if settings.show_all_plots:
         #     plt.quiver(u,v,color='g')
         #     plt.show()

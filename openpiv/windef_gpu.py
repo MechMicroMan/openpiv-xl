@@ -343,16 +343,6 @@ def deform_windows(frame, x, y, u, v, window_size, overlap, interpolation_order 
 
 
 def first_pass(frame_a, frame_b, settings):
-    # window_size,
-    # overlap,
-    # iterations,
-    # correlation_method="circular",
-    # normalized_correlation=False,
-    # subpixel_method="gaussian",
-    # do_sig2noise=False,
-    # sig2noise_method="peak2peak",
-    # sig2noise_mask=2,
-    # settings):
     """
     First pass of the PIV evaluation.
 
@@ -553,12 +543,12 @@ def multipass_img_deform(
         y_int[0] - np.arange(y_add[0], 0, -1) * (window_size - overlap),
         y_int,
         y_int[-1] + np.arange(1, y_add[1] + 1) * (window_size - overlap)
-    )) #.astype(int)
+    ))
     x_int = np.hstack((
         x_int[0] - np.arange(x_add[0], 0, -1) * (window_size - overlap),
         x_int,
         x_int[-1] + np.arange(1, x_add[1] + 1) * (window_size - overlap)
-    )) #.astype(int)
+    ))
 
     x, y = np.meshgrid(x_int, y_int, copy=True)
 
@@ -569,9 +559,7 @@ def multipass_img_deform(
                              ky=settings.interpolation_order)
     
     u_pre = ip(y_int, x_int)
-    # dtype = float64
 
-    # ip2 = RectBivariateSpline(y_old, x_old, np.ma.filled(v_old, 0.), 
     ip2 = RectBivariateSpline(y_old, x_old, v_old, 
                               kx=settings.interpolation_order, 
                               ky=settings.interpolation_order)
