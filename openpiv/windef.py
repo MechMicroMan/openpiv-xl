@@ -15,7 +15,7 @@ from scipy.interpolate import RectBivariateSpline
 import matplotlib.pyplot as plt
 
 from openpiv.tools import Multiprocesser
-from openpiv import validation, filters, tools, preprocess
+from openpiv import validation, filters, tools
 from openpiv.pyprocess import extended_search_area_piv, get_rect_coordinates, \
     get_field_shape
 from openpiv import smoothn
